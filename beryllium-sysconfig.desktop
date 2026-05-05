@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=BredOS Config
+Name=Beryllium OS Config
 Comment=Launch bredos-config in terminal
-Exec=bredos-config
+Exec=beryllium-config
 Terminal=true
 Type=Application
 Categories=Utility;
-Icon=bredsq
+Icon=be_black

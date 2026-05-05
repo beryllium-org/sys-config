@@ -1,2 +1,2 @@
 # sys-config
-BredOS system configurator
+Beryllium OS system configurator

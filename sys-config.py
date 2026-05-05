@@ -10,11 +10,11 @@ if "TERM" in os.environ and os.environ["TERM"] == "xterm-kitty":
     os.environ["TERM"] = "alacritty"
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-from bredos import dt
-from bredos import utilities
-from bredos import curseapp as c
+from beryllium import dt
+from beryllium import utilities
+from beryllium import curseapp as c
 
-c.APP_NAME = "BredOS System Configurator"
+c.APP_NAME = "Beryllium OS System Configurator"
 LOG_FILE = None
 DRYRUN = False
 ROOT_MODE = False
@@ -648,7 +648,7 @@ def filesystem_resize() -> None:
             "This enables a service present and used upon the first boot of the device.",
             "This is a safe operation.",
             "",
-            "Despite this I have the undying urge to pester you. Are you a loyal bred?",
+            "Do you wish to continue?",
         ],
         "Pancake spirit",
     ):
@@ -781,7 +781,7 @@ def uboot_migrator() -> bool:
         _, label_data = next(iter(labels.items()))
 
         extcfg["U_BOOT_IS_SETUP"] = "true"
-        extcfg["U_BOOT_MENU_LABEL"] = "BredOS"
+        extcfg["U_BOOT_MENU_LABEL"] = "Beryllium OS"
         extcfg["U_BOOT_COPY_DTB_TO_BOOT"] = "true"
 
         if "append" in label_data:
@@ -1145,7 +1145,7 @@ def hack_wol() -> None:
     cmd = [
         "bash",
         "-c",
-        'pacman -Qi bredos-wol &>/dev/null && echo "Removing.." && pacman -R --noconfirm bredos-wol || { echo "Installing.."; pacman -Sy; pacman -S --noconfirm bredos-wol; }',
+        'pacman -Qi beryllium-wol &>/dev/null && echo "Removing.." && pacman -R --noconfirm beryllium-wol || { echo "Installing.."; pacman -Sy; pacman -S --noconfirm beryllium-wol; }',
     ]
     if c.confirm(["Toggle the Wake-On-Lan hack?"], "Wake On Lan"):
         runner(cmd, True, "Wake On Lan")
@@ -1306,7 +1306,7 @@ def install_steam() -> None:
                 [
                     "This will install Steam for ARM, suitable for RK3588 systems with Panfork graphics.",
                     "",
-                    "Panfork is the default BredOS video driver.",
+                    "Panfork is the default Beryllium OS video driver.",
                     "Are you sure you wish to continue?",
                 ]
             ):
@@ -1333,6 +1333,7 @@ def install_development() -> None:
         "-c",
         "pacman -Sy && pacman -S --noconfirm --needed"
         + " python-prettytable"
+        + " devtools"
         + " grub"
         + " parted"
         + " gptfdisk"
@@ -1343,14 +1344,14 @@ def install_development() -> None:
         + " kmod"
         + " bc"
         + " uboot-tools"
-        + " bredos-tools",
+        + " beryllium-tools",
     ]
     if c.confirm(
         [
             "This will install the following packages:",
             "",
             " - python-prettytable",
-            " - grub",
+            " - devtools" " - grub",
             " - parted",
             " - gptfdisk",
             " - edk2-rk3588-devel",
@@ -1360,13 +1361,13 @@ def install_development() -> None:
             " - kmod",
             " - bc",
             " - uboot-tools",
-            " - bredos-tools",
+            " - beryllium-tools",
             "",
             "Are you sure you wish to continue?",
         ],
-        "Install BredOS Development Packages",
+        "Install Beryllium OS Development Packages",
     ):
-        runner(cmd, True, "Install BredOS Development Packages")
+        runner(cmd, True, "Install Beryllium OS Development Packages")
 
 
 def install_gnome() -> None:
@@ -1527,6 +1528,9 @@ def autoremove() -> None:
 
 
 def repos_stable() -> None:
+    c.message(["The repo switcher is temporarily disabled, sorry."], "Error")
+    return
+
     if c.confirm(
         [
             "Stable repositories receive a minimum amount of testing",
@@ -1570,6 +1574,9 @@ def repos_stable() -> None:
 
 
 def repos_latest() -> None:
+    c.message(["The repo switcher is temporarily disabled, sorry."], "Error")
+    return
+
     if c.confirm(
         [
             "Latest repositories pull from upsteam Arch Linux ARM",
@@ -1646,7 +1653,7 @@ def packages_menu() -> None:
             "Install Recommended Desktop Packages": install_recommends,
             "Install Docker": install_docker,
             "Install Steam": install_steam,
-            "Install BredOS Development Packages": install_development,
+            "Install Beryllium OS Development Packages": install_development,
             "Install GNOME Desktop": install_gnome,
             "Unlock Pacman Database": unlock_pacman,
             "Autoremove Unused packages": autoremove,
