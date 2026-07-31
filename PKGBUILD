@@ -1,7 +1,7 @@
 # Maintainer: Bill Sideris <bill88t@feline.gr>
 
 pkgname=beryllium-sysconfig
-pkgver=1.9.1
+pkgver=1.10.0
 pkgrel=1
 pkgdesc='BredOS System Configurator and Management utility'
 arch=(any)

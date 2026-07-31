@@ -604,7 +604,7 @@ def filesystem_maint() -> None:
     cmd = [
         "sh",
         "-c",
-        'findmnt -n -o FSTYPE / | grep -q btrfs && echo "Detected BTRFS root, performing balance operation." && btrfs balance start -dusage=20 -musage=20 /',
+        'findmnt -n -o FSTYPE / | grep -q btrfs && echo "Detected BTRFS root, performing balance operation." && echo && echo "Running 50% balance (Step 1/3)" && btrfs balance start -dusage=50 -musage=50 / && echo "Running 30% balance (Step 2/3)" && btrfs balance start -dusage=30 -musage=30 / && echo "Running 75% balance (Step 3/3)" && btrfs balance start -dusage=75 -musage=75 /',
     ]
     if c.confirm(
         [
