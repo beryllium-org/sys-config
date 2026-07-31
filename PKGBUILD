@@ -16,7 +16,7 @@ depends=('python' 'dtc' 'python-beryllium-common>=1.11.0')
 optdepends=('u-boot-update: Automatic U-Boot Updates')
 
 source=('sys-config.py' 'beryllium-sysconfig.desktop')
-sha256sums=('75ab56104281116cdb9ab4fee0283ebdda013c0ae770250e12cb49dc9e866220'
+sha256sums=('7e0f505952579e526a21efc42c3d44e86e95da2e04dbd421a7a861cacdab1623'
             '29188c3e48d409370673bd31646673a3fb777fc2615b0477369a138efa568e3c')
 
 package() {
