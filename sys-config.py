@@ -1181,7 +1181,7 @@ def pacman_integrity() -> None:
 /:.*(missing|Size mismatch|MODIFIED)/ &&
 $0 !~ /\.json|\.conf|\.pac(new|save|orig)/ &&
 $0 !~ /\/\.?(bashrc|bash_profile|zshrc|profile)$/ &&
-$0 !~ /^.*\/etc\/(shells|subgid|subuid|environment|sudoers|passwd|shadow|group|gshadow|fstab|mtab|issue|default\/|skel\/|locale\.gen|ssh\/|libvirt\/|pacman\.d\/mirrorlist)/ &&
+$0 !~ /^.*\/etc\/(shells|subgid|subuid|environment|sudoers|passwd|shadow|group|gshadow|fstab|mtab|issue|default\/|skel\/|locale\.gen|ssh\/|libvirt\/|pacman\.d\/mirrorlist|conf\.d\/snapper)/ &&
 $0 !~ /\/usr\/share\/(doc|man)|\.cache/ {
     pkg = gensub(/:.*$/, "", 1, $0);
     issues[pkg]++;
@@ -1199,7 +1199,6 @@ END {
 '""",
     ]
     runner(cmd, False, "Check Packages Integrity")
-
 
 def install_recommends() -> None:
     cmd = [
