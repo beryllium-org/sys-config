@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import json
 import re, os, sys, time, shlex, curses, shutil
 import argparse, subprocess, signal
 from pathlib import Path
@@ -7,7 +8,7 @@ from datetime import datetime
 
 # If running on the dumbest terminal on earth, fix env and reexec.
 if "TERM" in os.environ and os.environ["TERM"] == "xterm-kitty":
-    os.environ["TERM"] = "alacritty"
+    os.environ["TERM"] = "xterm-256color"
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 from beryllium import dt
@@ -29,18 +30,22 @@ def load_cache() -> dict:
     try:
         with open(CACHE_FILE) as f:
             return json.load(f)
-    except Exception as err:
+    except Exception:
         return {}
 
 
 def write_cache(payload: dict) -> None:
+    tmp = f"{CACHE_FILE}.tmp"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f)
         os.rename(tmp, CACHE_FILE)
-    except:
-        pass
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 # --------------- RUNNER ----------------
@@ -56,7 +61,7 @@ signal.signal(signal.SIGQUIT, handle_stupid)
 signal.signal(signal.SIGTSTP, handle_stupid)
 
 
-def cmdr(cmd: list, elevate: bool = False, label: str = None) -> str:
+def cmdr(cmd: list, elevate: bool = False, label: "str | None" = None) -> "str | int":
     output = []
     if DRYRUN:
         if c.stdscr is not None:
@@ -94,7 +99,8 @@ def cmdr(cmd: list, elevate: bool = False, label: str = None) -> str:
                     c.draw_border()
                 else:
                     print("Authentication Failed!")
-                return
+                return -1
+            raise
         if auth and c.stdscr is not None:
             c.resume()
     else:
@@ -158,10 +164,10 @@ def cli_runner(cmd: str, elevate: bool = False) -> None:
 
     result = cmdr(cmd, elevate)
 
-    if LOG_FILE is not None and result != -1:
+    if LOG_FILE is not None and isinstance(result, str):
         with open(LOG_FILE, "a") as f:
             f.write(f"$ {' '.join(cmd)}\n")
-            f.write(result.stdout + "\n")
+            f.write(result + "\n")
 
     if result == -1:
         print("\nABORTED")
@@ -184,7 +190,7 @@ def tui_runner(
 
     output = cmdr(cmd, elevate, label)
 
-    if LOG_FILE is not None and output != -1:
+    if LOG_FILE is not None and isinstance(output, str):
         with open(LOG_FILE, "a") as f:
             f.write(f"$ {' '.join(cmd)}\n{output}\n")
 
@@ -220,7 +226,7 @@ def runner(
 def mrunner(
     cmds: list, elevate=True, label: str = c.APP_NAME, prompt: bool = True
 ) -> None:
-    cmd = " && ".join(" ".join(b.replace("'", "\\'") for b in a) for a in cmds)
+    cmd = " && ".join(" ".join(shlex.quote(b) for b in a) for a in cmds)
     runner(["sh", "-c", cmd], elevate, label, prompt)
 
 
@@ -330,12 +336,11 @@ def set_base_dtb(dtb: str = None) -> None:
             # Remove all old Base DTBs
             efidir = dt.detect_efidir()
             listing = utilities.ls(efidir + "/dtb/base/")
-            listing_str = " ".join(str(p) for p in listing)
 
-            cmds = [
-                ["rm", "-v", listing_str],
-                ["cp", "-v", matched_dtb, efidir + "/dtb/base/"],
-            ]
+            cmds = []
+            if listing:
+                cmds.append(["rm", "-v"] + [str(p) for p in listing])
+            cmds.append(["cp", "-v", matched_dtb, efidir + "/dtb/base/"])
 
             # Changes here must also be performed down in set_overlays
             if normalized_dtb == "rk3588s-fydetab-duo.dtb":
@@ -1199,6 +1204,7 @@ END {
 '""",
     ]
     runner(cmd, False, "Check Packages Integrity")
+
 
 def install_recommends() -> None:
     cmd = [

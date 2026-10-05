@@ -1,7 +1,7 @@
 # Maintainer: Bill Sideris <bill88t@feline.gr>
 
 pkgname=beryllium-sysconfig
-pkgver=1.10.1
+pkgver=1.11.0
 pkgrel=1
 pkgdesc='BredOS System Configurator and Management utility'
 arch=(any)
@@ -16,7 +16,7 @@ depends=('python' 'dtc' 'python-beryllium-common>=1.11.0')
 optdepends=('u-boot-update: Automatic U-Boot Updates')
 
 source=('sys-config.py' 'beryllium-sysconfig.desktop')
-sha256sums=('eedab8d70d3ee0d5a049bc49bae08e04e45ebf5711a86c747786b49b526c1fbf'
+sha256sums=('c01054ad9fd0f0c7dc55ee1bb21f747ee4cad0e8902854f487ee7eff6fb85abb'
             '29188c3e48d409370673bd31646673a3fb777fc2615b0477369a138efa568e3c')
 
 package() {
