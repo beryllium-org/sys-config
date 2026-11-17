@@ -1,9 +1,9 @@
 # Maintainer: Bill Sideris <bill88t@feline.gr>
 
 pkgname=beryllium-sysconfig
-pkgver=1.11.0
+pkgver=1.12.0
 pkgrel=1
-pkgdesc='BredOS System Configurator and Management utility'
+pkgdesc='Beryllium OS System Configurator and Management utility'
 arch=(any)
 url=https://github.com/BredOS/sys-config
 license=('GPL3')

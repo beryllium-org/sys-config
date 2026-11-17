@@ -1178,6 +1178,66 @@ def hack_gpgme() -> None:
         runner(cmd, True, "ALARM IS STUPID")
 
 
+def hack_journal_persistent() -> None:
+    dropin_path = Path("/etc/systemd/journald.conf.d/00-beryllium-volatile.conf")
+    dropin_content = "[Journal]\nStorage=volatile\n"
+    journal_dir = Path("/var/log/journal")
+
+    if dropin_path.exists():
+        if not c.confirm(
+            [
+                "Persistent journaling is currently disabled.",
+                "",
+                "Re-enable it? Logs will be stored on disk again.",
+            ],
+            "Persistent Journaling",
+        ):
+            return
+        if not DRYRUN:
+            dropin_path.unlink()
+            try:
+                dropin_path.parent.rmdir()
+            except OSError:
+                pass
+            journal_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "sh",
+            "-c",
+            "systemctl restart systemd-journald && systemctl restart systemd-journal-flush",
+        ]
+        runner(cmd, True, "Persistent Journaling")
+        c.message(["Persistent journaling re-enabled."], "Persistent Journaling")
+    else:
+        if not c.confirm(
+            [
+                "Disable persistent journaling?",
+                "",
+                "Logs will be kept in RAM only and are lost on reboot.",
+                "All on-disk journal data will be discarded.",
+            ],
+            "Persistent Journaling",
+        ):
+            return
+        if not DRYRUN:
+            dropin_path.parent.mkdir(parents=True, exist_ok=True)
+            dropin_path.write_text(dropin_content)
+        cmd = [
+            "sh",
+            "-c",
+            "systemctl stop systemd-journald.socket systemd-journald.service"
+            " && rm -rf /var/log/journal"
+            " && systemctl start systemd-journald.socket",
+        ]
+        runner(cmd, True, "Persistent Journaling")
+        c.message(
+            [
+                "Persistent journaling disabled.",
+                "Logs are stored in RAM only and are lost on reboot.",
+            ],
+            "Persistent Journaling",
+        )
+
+
 def pacman_integrity() -> None:
     cmd = [
         "sh",
@@ -1276,60 +1336,20 @@ def install_docker() -> None:
 
 
 def install_steam() -> None:
-    if os.uname().machine == "aarch64":
-        if utilities.arm64_v9_or_later():
-            c.message(
-                [
-                    "Steam on ARMv9 systems is temporarily not supported.",
-                    "",
-                    "Lack of time.",
-                ],
-                "Cannot Install Steam",
-            )
-        elif "rockchip-rk3588-panthor-gpu.dtbo" in dt.identify_overlays():
-            cmd = [
-                "sh",
-                "-c",
-                "pacman -Sy && pacman -S --noconfirm --needed steam steam-libs-any",
-            ]
-            if c.confirm(
-                [
-                    "This will install Steam for ARM, for mainline mesa systems.",
-                    "",
-                    "Should only be used on RK3588 if you've switched to Panthor graphics.",
-                    "Are you sure you wish to continue?",
-                ]
-            ):
-                runner(cmd, True, "Install Steam")
-        else:
-            cmd = [
-                "sh",
-                "-c",
-                "pacman -Sy && pacman -S --noconfirm --needed steam steam-libs-rk3588",
-            ]
-            if c.confirm(
-                [
-                    "This will install Steam for ARM, suitable for RK3588 systems with Panfork graphics.",
-                    "",
-                    "Panfork is the default Beryllium OS video driver.",
-                    "Are you sure you wish to continue?",
-                ]
-            ):
-                runner(cmd, True, "Install Steam")
-    else:
-        cmd = [
-            "sh",
-            "-c",
-            "pacman -Sy && pacman -S --noconfirm --needed steam",
-        ]
-        if c.confirm(
-            [
-                "This will install normal Steam, this will not work on non-x86 systems.",
-                "",
-                "Are you sure you wish to continue?",
-            ]
-        ):
-            runner(cmd, True, "Install Steam")
+    cmd = [
+        "sh",
+        "-c",
+        "pacman -Sy && pacman -S --noconfirm --needed steam",
+    ]
+    if c.confirm(
+        [
+            "This will install the Steam package.",
+            "",
+            "Are you sure you wish to continue?",
+        ],
+        "Install Steam",
+    ):
+        runner(cmd, True, "Install Steam")
 
 
 def install_development() -> None:
@@ -1645,6 +1665,7 @@ def tweaks_menu() -> None:
             "General: Pipewire CPU fix": hack_pipewire,
             "General: Wake On Lan": hack_wol,
             "General: Pacman Sync hook": pacman_sync,
+            "General: Persistent Journaling": hack_journal_persistent,
             "ARM: Apply GNUPG fix": hack_gpgme,
         },
     )
@@ -1744,6 +1765,8 @@ def dp(args):
             pacman_sync()
         elif args.action == "gpgme":
             hack_gpgme()
+        elif args.action == "journal":
+            hack_journal_persistent()
     elif cmd == "migrations":
         if args.action == "cpio":
             migrate_cpio()
@@ -1831,6 +1854,7 @@ def main():
     hack_sub.add_parser("wol")
     hack_sub.add_parser("gpgme")
     hack_sub.add_parser("pacmansync")
+    hack_sub.add_parser("journal")
 
     # Migrations
     migrations_parser = subparsers.add_parser("migrations")
