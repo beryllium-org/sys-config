@@ -1452,8 +1452,8 @@ if [ -z "$root_uuid" ]; then
 fi
 
 # Save the original subvolume specifications before replacing the
-# fstab. /boot and /boot/efi are deliberately excluded: they hold the
-# persistent toggle marker and stay read-write.
+# fstab. /boot and /boot/efi are excluded from the RAM overlays; the
+# fake fstab protects them separately with read-only mount options.
 awk -v root_uuid="$root_uuid" '
     /^[ \\t]*#/ { next }
     $3 == "btrfs" && tolower($1) == "uuid=" root_uuid && $2 != "/" && $2 !~ /^\\/boot/ && NF >= 4 {
@@ -1481,13 +1481,24 @@ mount -t overlay overlay \\
 # overlay upper so it vanishes at reboot. The root and matching btrfs
 # entries are commented out because this hook mounts their overlays itself;
 # otherwise systemd would mount the persistent filesystems over them.
-# /boot (and the ESP) keep their entries and stay read-write.
+# /boot (and the ESP) keep their entries but become read-only; the
+# toggle temporarily remounts the active boot filesystem read-write.
 awk -v root_uuid="$root_uuid" '
     BEGIN { print "# THIS IS A FAKE FSTAB, NOT A REAL FILE" }
     /^[ \t]*#/ { print; next }
     $2 == "/" { print "# " $0 "  # beryllium-readonly: RAM overlay"; next }
     $3 == "btrfs" && tolower($1) == "uuid=" root_uuid && $2 !~ /^\\/boot/ && NF >= 4 {
         print "# " $0 "  # beryllium-readonly: RAM overlay"
+        next
+    }
+    ($2 == "/boot" || $2 == "/boot/efi") && NF >= 4 {
+        opts = $4
+        gsub(/(^|,)ro(,|$)/, ",", opts)
+        gsub(/(^|,)rw(,|$)/, ",", opts)
+        sub(/^,/, "", opts)
+        sub(/,$/, "", opts)
+        $4 = (opts == "" ? "ro" : "ro," opts)
+        print
         next
     }
     { print }
@@ -1559,7 +1570,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "8"
+    module_version = "9"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True, exist_ok=True)
@@ -1602,6 +1613,52 @@ return 0
             + shlex.quote(str(module_dir / "image-version"))
         )
 
+    def _update_marker(remove: bool) -> bool:
+        # In an ephemeral session the fake fstab mounts boot read-only.
+        # Open a short read-write window for the persistent marker and
+        # always restore ro through the shell's EXIT trap.
+        if not root_overlaid:
+            try:
+                if remove:
+                    marker_path.unlink()
+                else:
+                    marker_path.write_text("disabled\n")
+                os.sync()
+                return True
+            except OSError:
+                return False
+
+        boot_arg = shlex.quote(str(marker_path.parent))
+        if remove:
+            action = "rm -f " + marker_arg
+        else:
+            action = (
+                "printf "
+                + shlex.quote("%s\n")
+                + " "
+                + shlex.quote("disabled")
+                + " > "
+                + marker_arg
+            )
+        restore = "mount -o remount,ro " + boot_arg
+        runner(
+            [
+                "sh",
+                "-c",
+                "mount -o remount,rw "
+                + boot_arg
+                + " || exit 1; trap "
+                + shlex.quote(restore)
+                + " EXIT; "
+                + action
+                + " && sync",
+            ],
+            True,
+            "Read-Only Root",
+        )
+        # runner() returns None; the marker itself is the success check.
+        return marker_path.exists() == (not remove)
+
     if module_dir.exists() and not marker_exists:
         # Enabled -> disable is a single marker write, safe on every
         # layout from every kind of session (the marker lives on a
@@ -1618,10 +1675,7 @@ return 0
         ):
             return
         if not DRYRUN:
-            try:
-                marker_path.write_text("disabled\n")
-                os.sync()
-            except OSError:
+            if not _update_marker(False):
                 c.message(
                     ["Failed to write the marker file."],
                     "Read-Only Root",
@@ -1662,9 +1716,8 @@ return 0
     if rebuild_needed and root_overlaid:
         c.message(
             [
-                "The root is overlaid this boot: the rebuilt initramfs",
-                "(and /boot itself on the UEFI layout) would be written",
-                "to RAM only and lost, leaving the module in a limbo state.",
+                "The root is overlaid and boot is protected this boot:",
+                "the module and initramfs cannot be rebuilt safely.",
                 "Disable the read-only root first (one marker write), reboot,",
                 "then run this again from the read-write system, or use a chroot.",
             ],
@@ -1680,7 +1733,8 @@ return 0
         "installs, updates and host-key changes appear to work but vanish.",
         "Btrfs subvolumes on the root filesystem get RAM overlays too:",
         "their files remain visible and writes succeed, but all changes",
-        "vanish at reboot; boot and other disks stay read-write.",
+        "vanish at reboot; other disks stay read-write.",
+        "Boot is read-only except while changing the toggle marker.",
         "",
         "The toggle is a marker file at " + str(marker_path) + ":",
         "present = read-write boot, absent = read-only boot.",
@@ -1729,10 +1783,7 @@ return 0
                 return
 
         else:
-            try:
-                marker_path.unlink()
-                os.sync()
-            except OSError:
+            if not _update_marker(True):
                 c.message(
                     ["Failed to remove the marker file."],
                     "Read-Only Root",
