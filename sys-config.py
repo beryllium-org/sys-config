@@ -1366,6 +1366,22 @@ mount -t overlay overlay \\
     return 0
 }
 
+# Present an ephemeral fstab to the real root, copied up into the
+# overlay upper so it vanishes at reboot: the root entry is dropped
+# (systemd-remount-fs cannot remount an overlay root and would fail),
+# and btrfs subvolume mounts (/home, /var/log, ...) become read-only
+# so no writes persist through them. /boot (and the ESP) keep their
+# options: the marker must stay writable.
+awk '
+    /^[ \\t]*#/ { print; next }
+    $2 == "/" { print "# " $0 "  # beryllium-readonly: overlay root"; next }
+    $3 == "btrfs" && $2 !~ /^\\/boot/ && NF >= 4 \\
+        && $4 !~ /(^|,)ro(,|$)/ { $4 = "ro," $4 }
+    { print }
+' /sysroot/etc/fstab > /sysroot/etc/fstab.beryllium-readonly \\
+    && mv /sysroot/etc/fstab.beryllium-readonly /sysroot/etc/fstab \\
+    || warn "beryllium-readonly: cannot adjust the fstab; subvolume mounts will persist"
+
 readonly_boot
 return 0
 """
@@ -1415,7 +1431,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "2"
+    module_version = "3"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True, exist_ok=True)
@@ -1532,8 +1548,11 @@ return 0
         "Enable a read-only root?",
         "",
         "The real root is shadowed by an OverlayFS with a tmpfs upper (half of RAM).",
-        "All changes are discarded at the next reboot:",
+        "All writes to the root are discarded at the next reboot:",
         "installs, updates and host-key changes appear to work but vanish.",
+        "Btrfs subvolume mounts (/home, /var/log, ...) are re-mounted",
+        "read-only via an ephemeral fstab, so nothing persists through",
+        "them either; only the boot filesystem stays read-write.",
         "",
         "The toggle is a marker file at " + str(marker_path) + ":",
         "present = read-write boot, absent = read-only boot.",
