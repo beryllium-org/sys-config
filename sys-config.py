@@ -1458,15 +1458,22 @@ return 0
                 )
                 return
             if module_stale and not root_overlaid:
-                # Self-heal a stale module on the real root. The image
-                # keeps the old hook until the next rebuild, which is
-                # harmless while the marker forces a read-write boot.
+                # Self-heal a stale module on the real root, and rebuild
+                # the initramfs now: without the rebuild the disk copy
+                # would already look current to the enable path, and the
+                # stale hook would stay baked into the image forever.
+                # Safe here: the marker forces a read-write boot.
                 try:
                     shutil.rmtree(module_dir)
                     _install_module_files()
                     os.sync()
                 except OSError:
                     pass
+                runner(
+                    ["sh", "-c", "dracut-rebuild && sync"],
+                    True,
+                    "Read-Only Root",
+                )
         c.message(
             [
                 "Read-only root disabled.",
