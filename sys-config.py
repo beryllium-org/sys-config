@@ -1238,6 +1238,342 @@ def hack_journal_persistent() -> None:
         )
 
 
+def hack_readonly() -> None:
+    module_dir = Path("/usr/lib/dracut/modules.d/99beryllium-readonly")
+
+    module_setup = """#!/bin/bash
+# Standalone module: enabled whenever requested explicitly.
+check() {
+    return 0
+}
+
+install() {
+    dracut_install mount umount mkdir mountpoint
+    instmods overlay
+    instmods vfat nls_cp437 nls_iso8859-1
+    inst_hook pre-pivot 01 "$moddir/beryllium-readonly-mount.sh"
+}
+"""
+    mount_hook = """#!/bin/sh
+# Re-mount the real root as an OverlayFS with a tmpfs upper.
+# The toggle is a marker file (beryllium-ro) on the persistent boot
+# filesystem: /boot on u-boot systems, /boot/efi on UEFI systems.
+# Marker present -> boot read-write; absent -> read-only overlay root.
+# All writes land in RAM and are discarded at shutdown.
+# Installed as a pre-pivot hook: it is sourced after /sysroot is
+# mounted by sysroot.mount and before switch_root moves it to /.
+# Mount hooks are only a fallback on systemd dracut, so mount would
+# never run.
+BASE=/run/beryllium-readonly
+UPPER=$BASE/upper
+WORK=$BASE/work
+LOWER=$BASE/lower
+FLAGDIR=/run/beryllium-readonly-flag
+
+readonly_boot() {
+    warn "beryllium-readonly: booting with a read-only root"
+}
+
+boot_rw() {
+    warn "beryllium-readonly: falling back to a read-write root"
+    return 0
+}
+
+# Real root must be mounted by now. If it is not, there is nothing to
+# shadow, so continue booting as the read-write root.
+[ -d /sysroot/usr ] && mountpoint -q /sysroot || {
+    warn "beryllium-readonly: /sysroot is not mounted; booting read-write"
+    return 0
+}
+
+# fstab line for a given mountpoint, without comment lines.
+boot_spec() {
+    awk -v mp="$1" '
+        /^[ \\t]*#/ { next }
+        $2 == mp { print; exit }
+    ' /sysroot/etc/fstab
+}
+
+# Returns 0 only if the marker is found on the given mountpoint.
+check_for_marker() {
+    mp=$1
+    spec=$(boot_spec "$mp")
+    [ -n "$spec" ] || {
+        warn "beryllium-readonly: no fstab entry for $mp; continuing"
+        return 1
+    }
+    dev=$(printf %s "$spec" | awk '{ print $1 }')
+    fstype=$(printf %s "$spec" | awk '{ print $3 }')
+    case "$dev" in
+        UUID=*) dev=/dev/disk/by-uuid/$(printf %s "${dev#UUID=}" | tr 'A-F' 'a-f') ;;
+        PARTUUID=*) dev=/dev/disk/by-partuuid/$(printf %s "${dev#PARTUUID=}" | tr 'A-F' 'a-f') ;;
+        LABEL=*) dev=/dev/disk/by-label/$(printf %s "${dev#LABEL=}") ;;
+        PARTLABEL=*) dev=/dev/disk/by-partlabel/$(printf %s "${dev#PARTLABEL=}") ;;
+    esac
+    if mount -t "$fstype" -o ro "$dev" $FLAGDIR; then
+        ret=1
+        [ -e $FLAGDIR/beryllium-ro ] && ret=0
+        umount $FLAGDIR
+        return $ret
+    fi
+    warn "beryllium-readonly: cannot mount $mp to check the marker; continuing"
+    return 1
+}
+
+# The marker may live on /boot (u-boot layouts) or /boot/efi (UEFI
+# layouts). A marker in any location is sufficient for a read-write
+# boot; absence everywhere defaults to read-only.
+if ! mkdir -p $FLAGDIR; then
+    warn "beryllium-readonly: cannot create $FLAGDIR; defaulting to read-only root"
+elif check_for_marker /boot || check_for_marker /boot/efi; then
+    info "beryllium-readonly: marker found, booting read-write"
+    return 0
+fi
+
+size_kb=$(awk '/MemTotal/ { print int($2 / 2) }' /proc/meminfo)
+[ -n "$size_kb" ] && [ "$size_kb" -gt 0 ] || {
+    warn "beryllium-readonly: cannot size tmpfs"
+    boot_rw
+    return 0
+}
+
+mkdir -p $BASE || { boot_rw; return 0; }
+mount -t tmpfs -o size=${size_kb}k tmpfs $BASE || { boot_rw; return 0; }
+mkdir -p $UPPER $WORK $LOWER || { boot_rw; return 0; }
+
+mount --bind /sysroot $LOWER || { boot_rw; return 0; }
+
+mount -t overlay overlay \\
+    -o lowerdir=$LOWER,upperdir=$UPPER,workdir=$WORK \\
+    /sysroot || {
+    warn "beryllium-readonly: overlay mount failed"
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+}
+
+readonly_boot
+return 0
+"""
+
+    def _boot_marker_path() -> "Path | None":
+        # /boot on u-boot systems (boot partition mount), /boot/efi on
+        # UEFI systems (ESP mount). /proc/self/mounts escapes spaces
+        # as \040.
+        with open("/proc/self/mounts", "r") as mounts:
+            for line in mounts:
+                fields = line.split()
+                if len(fields) < 3:
+                    continue
+                mountpoint = fields[1].replace("\\040", " ")
+                if mountpoint == "/boot":
+                    return Path("/boot/beryllium-ro")
+                if mountpoint == "/boot/efi":
+                    return Path("/boot/efi/beryllium-ro")
+        return None
+
+    if shutil.which("dracut-rebuild") is None:
+        c.message(
+            ["dracut-rebuild is not installed, cannot manage the image."],
+            "Read-Only Root",
+        )
+        return
+
+    marker_path = _boot_marker_path()
+    if marker_path is None:
+        c.message(
+            [
+                "Neither /boot nor /boot/efi is a mountpoint.",
+                "There is no persistent location for the toggle marker.",
+            ],
+            "Read-Only Root",
+        )
+        return
+
+    root_overlaid = False
+    with open("/proc/self/mounts", "r") as mounts:
+        for line in mounts:
+            fields = line.split()
+            if len(fields) > 2 and fields[1] == "/" and fields[2] == "overlay":
+                root_overlaid = True
+                break
+
+    marker_exists = marker_path.exists()
+    marker_arg = shlex.quote(str(marker_path))
+
+    module_version = "1"
+
+    def _install_module_files() -> None:
+        module_dir.mkdir(parents=True)
+        (module_dir / "module-setup.sh").write_text(module_setup)
+        (module_dir / "beryllium-readonly-mount.sh").write_text(mount_hook)
+        (module_dir / "version").write_text(module_version + "\n")
+        os.chmod(module_dir / "beryllium-readonly-mount.sh", 0o755)
+
+    installed_version = None
+    if module_dir.exists():
+        try:
+            installed_version = (module_dir / "version").read_text().strip()
+        except OSError:
+            installed_version = None
+    module_stale = module_dir.exists() and installed_version != module_version
+
+    if module_dir.exists() and not marker_exists:
+        # Enabled -> disable is a single marker write, safe on every
+        # layout from every kind of session (the marker lives on a
+        # mount outside the overlay).
+        if not c.confirm(
+            [
+                "Read-only root is currently enabled.",
+                "",
+                "Disable it? The next boot will be read-write.",
+                "This writes a marker file to " + str(marker_path) + ".",
+                "The running session keeps its RAM-backed root until reboot.",
+            ],
+            "Read-Only Root",
+        ):
+            return
+        if not DRYRUN:
+            try:
+                marker_path.write_text("disabled\n")
+                os.sync()
+            except OSError:
+                c.message(
+                    ["Failed to write the marker file."],
+                    "Read-Only Root",
+                )
+                return
+            if module_stale and not root_overlaid:
+                # Self-heal a stale module on the real root. The image
+                # keeps the old hook until the next rebuild, which is
+                # harmless while the marker forces a read-write boot.
+                try:
+                    shutil.rmtree(module_dir)
+                    _install_module_files()
+                    os.sync()
+                except OSError:
+                    pass
+        c.message(
+            [
+                "Read-only root disabled.",
+                "Applies on the next reboot.",
+            ],
+            "Read-Only Root",
+        )
+        return
+
+    # Enabling.
+    rebuild_needed = not module_dir.exists() or module_stale
+    if rebuild_needed and root_overlaid:
+        c.message(
+            [
+                "The root is overlaid this boot: the rebuilt initramfs",
+                "(and /boot itself on the UEFI layout) would be written",
+                "to RAM only and lost, leaving the module in a limbo state.",
+                "Disable the read-only root first (one marker write), reboot,",
+                "then run this again from the read-write system, or use a chroot.",
+            ],
+            "Read-Only Root",
+        )
+        return
+
+    messages = [
+        "Enable a read-only root?",
+        "",
+        "The real root is shadowed by an OverlayFS with a tmpfs upper (half of RAM).",
+        "All changes are discarded at the next reboot:",
+        "installs, updates and host-key changes appear to work but vanish.",
+        "",
+        "The toggle is a marker file at " + str(marker_path) + ":",
+        "present = read-write boot, absent = read-only boot.",
+        "Further toggles only touch the marker, no initramfs rebuilds.",
+        "",
+        "EXPERIMENTAL: this has not been tested broadly and may lead to",
+        "unforeseen consequences, up to and including an unbootable system.",
+        "Test at your own risk; the marker fallback should keep the next",
+        "boot read-write if the rebuild fails, but nothing is guaranteed.",
+    ]
+    if rebuild_needed:
+        messages += [
+            "",
+            "This (re)installs the dracut module and regenerates the",
+            "initramfs now.",
+        ]
+    if not c.confirm(messages, "Read-Only Root"):
+        return
+
+    if not DRYRUN:
+        if rebuild_needed:
+            try:
+                if module_stale:
+                    shutil.rmtree(module_dir)
+                _install_module_files()
+            except OSError:
+                c.message(
+                    ["Failed to install the dracut module."],
+                    "Read-Only Root",
+                )
+                return
+            # Safety latch: if the rebuild fails or the machine dies
+            # mid-rebuild, the marker keeps the system read-write and
+            # recoverable instead of leaving a stale enabled state.
+            try:
+                marker_path.write_text("disabled\n")
+                os.sync()
+            except OSError:
+                c.message(
+                    [
+                        "Failed to write the marker file.",
+                        "The module is installed but stays disabled.",
+                    ],
+                    "Read-Only Root",
+                )
+                return
+
+        else:
+            try:
+                marker_path.unlink()
+                os.sync()
+            except OSError:
+                c.message(
+                    ["Failed to remove the marker file."],
+                    "Read-Only Root",
+                )
+                return
+
+    if rebuild_needed:
+        runner(
+            [
+                "sh",
+                "-c",
+                "dracut-rebuild && rm -f " + marker_arg + " && sync",
+            ],
+            True,
+            "Read-Only Root",
+        )
+        if not DRYRUN and marker_path.exists():
+            # dracut-rebuild failed or was aborted, so the marker write
+            # kept the system read-write instead of enabling.
+            c.message(
+                [
+                    "The initramfs rebuild failed or was aborted.",
+                    "Read-only root was not enabled; the next boot",
+                    "stays read-write.",
+                ],
+                "Read-Only Root",
+            )
+            return
+
+    c.message(
+        [
+            "Read-only root enabled.",
+            "Applies on the next reboot.",
+        ],
+        "Read-Only Root",
+    )
+
+
 def pacman_integrity() -> None:
     cmd = [
         "sh",
@@ -1666,6 +2002,7 @@ def tweaks_menu() -> None:
             "General: Wake On Lan": hack_wol,
             "General: Pacman Sync hook": pacman_sync,
             "General: Persistent Journaling": hack_journal_persistent,
+            "General: Read-Only Root (OverlayFS)": hack_readonly,
             "ARM: Apply GNUPG fix": hack_gpgme,
         },
     )
@@ -1767,6 +2104,8 @@ def dp(args):
             hack_gpgme()
         elif args.action == "journal":
             hack_journal_persistent()
+        elif args.action == "readonly":
+            hack_readonly()
     elif cmd == "migrations":
         if args.action == "cpio":
             migrate_cpio()
@@ -1855,6 +2194,7 @@ def main():
     hack_sub.add_parser("gpgme")
     hack_sub.add_parser("pacmansync")
     hack_sub.add_parser("journal")
+    hack_sub.add_parser("readonly")
 
     # Migrations
     migrations_parser = subparsers.add_parser("migrations")
