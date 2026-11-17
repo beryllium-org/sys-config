@@ -1418,7 +1418,7 @@ return 0
     module_version = "2"
 
     def _install_module_files() -> None:
-        module_dir.mkdir(parents=True)
+        module_dir.mkdir(parents=True, exist_ok=True)
         (module_dir / "module-setup.sh").write_text(module_setup)
         (module_dir / "beryllium-readonly-mount.sh").write_text(mount_hook)
         (module_dir / "version").write_text(module_version + "\n")
@@ -1431,6 +1431,32 @@ return 0
         except OSError:
             installed_version = None
     module_stale = module_dir.exists() and installed_version != module_version
+
+    # The authoritative staleness is what is in the initramfs image,
+    # not the disk copy: the disk files can be current while the image
+    # still holds an older module.
+    image_version = None
+    if module_dir.exists():
+        try:
+            image_version = (module_dir / "image-version").read_text().strip()
+        except OSError:
+            image_version = None
+    rebuild_needed = (
+        not module_dir.exists() or module_stale or image_version != module_version
+    )
+
+    def _stamp_cmd() -> str:
+        # Writes the image stamp only when the rebuild actually
+        # succeeded, so a failed rebuild leaves the image visibly
+        # stale and the next toggle retries.
+        return (
+            "printf "
+            + shlex.quote("%s\n")
+            + " "
+            + shlex.quote(module_version)
+            + " > "
+            + shlex.quote(str(module_dir / "image-version"))
+        )
 
     if module_dir.exists() and not marker_exists:
         # Enabled -> disable is a single marker write, safe on every
@@ -1457,20 +1483,25 @@ return 0
                     "Read-Only Root",
                 )
                 return
-            if module_stale and not root_overlaid:
-                # Self-heal a stale module on the real root, and rebuild
-                # the initramfs now: without the rebuild the disk copy
-                # would already look current to the enable path, and the
-                # stale hook would stay baked into the image forever.
+            if rebuild_needed and not root_overlaid:
+                # Self-heal the module and rebuild the initramfs now.
                 # Safe here: the marker forces a read-write boot.
+                if module_stale:
+                    try:
+                        shutil.rmtree(module_dir)
+                    except OSError:
+                        pass
                 try:
-                    shutil.rmtree(module_dir)
                     _install_module_files()
                     os.sync()
                 except OSError:
                     pass
                 runner(
-                    ["sh", "-c", "dracut-rebuild && sync"],
+                    [
+                        "sh",
+                        "-c",
+                        "dracut-rebuild && " + _stamp_cmd() + " && sync",
+                    ],
                     True,
                     "Read-Only Root",
                 )
@@ -1484,7 +1515,6 @@ return 0
         return
 
     # Enabling.
-    rebuild_needed = not module_dir.exists() or module_stale
     if rebuild_needed and root_overlaid:
         c.message(
             [
@@ -1567,7 +1597,11 @@ return 0
             [
                 "sh",
                 "-c",
-                "dracut-rebuild && rm -f " + marker_arg + " && sync",
+                "dracut-rebuild && "
+                + _stamp_cmd()
+                + " && rm -f "
+                + marker_arg
+                + " && sync",
             ],
             True,
             "Read-Only Root",
