@@ -1,7 +1,7 @@
 # Maintainer: Bill Sideris <bill88t@feline.gr>
 
 pkgname=beryllium-sysconfig
-pkgver=1.12.1
+pkgver=1.12.2
 pkgrel=1
 pkgdesc='Beryllium OS System Configurator and Management utility'
 arch=(any)
@@ -16,7 +16,7 @@ depends=('python' 'dtc' 'python-beryllium-common>=1.11.0')
 optdepends=('u-boot-update: Automatic U-Boot Updates')
 
 source=('sys-config.py' 'beryllium-sysconfig.desktop')
-sha256sums=('ee675dbab95b8b4a85a1387a827fc63aad8a18b93fbfa9193417f697d58d8af6'
+sha256sums=('55da4c55c43235c1de0b29f68037d47d78ff706daf74cb9d1f46e4ad8f498c0a'
             '29188c3e48d409370673bd31646673a3fb777fc2615b0477369a138efa568e3c')
 
 package() {

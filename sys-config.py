@@ -1272,7 +1272,7 @@ LOWER=$BASE/lower
 FLAGDIR=/run/beryllium-readonly-flag
 
 readonly_boot() {
-    warn "beryllium-readonly: booting with a read-only root"
+    warn "beryllium-readonly: booting with RAM-backed ephemeral filesystems"
 }
 
 boot_rw() {
@@ -1333,6 +1333,66 @@ check_for_marker() {
     return 1
 }
 
+# Mount one persistent btrfs subvolume read-only, then shadow it with
+# its own RAM-backed overlay. The original contents remain visible.
+overlay_subvolume() {
+    dev=$1
+    mp=$2
+    fstype=$3
+    opts=$4
+    case "$dev" in
+        UUID=*|PARTUUID=*)
+            id=${dev#*=}
+            id=$(printf %s "$id" | tr 'A-F' 'a-f')
+            case "$dev" in
+                UUID=*) dev=/dev/disk/by-uuid/$id ;;
+                PARTUUID=*) dev=/dev/disk/by-partuuid/$id ;;
+            esac
+            ;;
+        LABEL=*) dev=/dev/disk/by-label/$(printf %s "${dev#LABEL=}") ;;
+        PARTLABEL=*) dev=/dev/disk/by-partlabel/$(printf %s "${dev#PARTLABEL=}") ;;
+    esac
+
+    # Strip rw/ro from the persistent mount's options. In particular,
+    # ro,rw would leave the lower mount writable because the last wins.
+    opts=$(printf '%s\n' "$opts" | awk '
+        BEGIN { FS = "," }
+        {
+            out = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i != "rw" && $i != "ro")
+                    out = out (out == "" ? "" : ",") $i
+            }
+            print (out == "" ? "ro" : "ro," out)
+        }
+    ')
+    subbase=$BASE/mounts$mp
+    sublower=$subbase/lower
+    subupper=$subbase/upper
+    subwork=$subbase/work
+    if ! mkdir -p "$sublower" "$subupper" "$subwork" "/sysroot$mp"; then
+        warn "beryllium-readonly: cannot create overlay directories for $mp"
+        return 1
+    fi
+    if ! mount -t "$fstype" -o "$opts" "$dev" "$sublower"; then
+        warn "beryllium-readonly: cannot mount the lower filesystem for $mp"
+        return 1
+    fi
+    if ! mount --make-private "$sublower"; then
+        warn "beryllium-readonly: cannot make the lower mount private for $mp"
+        umount "$sublower"
+        return 1
+    fi
+    if ! mount -t overlay overlay \
+        -o "lowerdir=$sublower,upperdir=$subupper,workdir=$subwork" \
+        "/sysroot$mp"; then
+        warn "beryllium-readonly: cannot mount the RAM overlay for $mp"
+        umount "$sublower"
+        return 1
+    fi
+    return 0
+}
+
 # The marker may live on /boot (u-boot layouts) or /boot/efi (UEFI
 # layouts). A marker in any location is sufficient for a read-write
 # boot; absence everywhere defaults to read-only.
@@ -1356,6 +1416,40 @@ mkdir -p $UPPER $WORK $LOWER || { boot_rw; return 0; }
 
 mount --bind /sysroot $LOWER || { boot_rw; return 0; }
 
+# A bind of a shared mount stays in its peer group. Keep the lower
+# private so mounting the overlay on /sysroot cannot propagate back
+# onto $LOWER and shadow the real root with another overlay.
+mount --make-private $LOWER || {
+    warn "beryllium-readonly: cannot make the lower mount private"
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+}
+mount -o remount,bind,ro $LOWER || {
+    warn "beryllium-readonly: cannot make the lower root read-only"
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+}
+
+# Save the original subvolume specifications before replacing the
+# fstab. /boot and /boot/efi are deliberately excluded: they hold the
+# persistent toggle marker and stay read-write.
+awk '
+    /^[ \\t]*#/ { next }
+    $3 == "btrfs" && $2 != "/" && $2 !~ /^\\/boot/ && NF >= 4 {
+        print $1 "\t" $2 "\t" $3 "\t" $4
+    }
+' /sysroot/etc/fstab > $BASE/subvolumes || {
+    warn "beryllium-readonly: cannot read the btrfs subvolume mounts"
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+}
+
 mount -t overlay overlay \\
     -o lowerdir=$LOWER,upperdir=$UPPER,workdir=$WORK \\
     /sysroot || {
@@ -1367,26 +1461,37 @@ mount -t overlay overlay \\
 }
 
 # Present an ephemeral fstab to the real root, copied up into the
-# overlay upper so it vanishes at reboot: the root entry is dropped
-# (systemd-remount-fs cannot remount an overlay root and would fail),
-# and btrfs subvolume mounts (/home, /var/log, ...) become read-only
-# so no writes persist through them. /boot (and the ESP) keep their
-# options: the marker must stay writable.
+# overlay upper so it vanishes at reboot. The root and btrfs entries
+# are commented out because this hook mounts their overlays itself;
+# otherwise systemd would mount the persistent filesystems over them.
+# /boot (and the ESP) keep their entries and stay read-write.
 awk '
+    BEGIN { print "# THIS IS A FAKE FSTAB, NOT A REAL FILE" }
     /^[ \t]*#/ { print; next }
-    $2 == "/" { print "# " $0 "  # beryllium-readonly: overlay root"; next }
+    $2 == "/" { print "# " $0 "  # beryllium-readonly: RAM overlay"; next }
     $3 == "btrfs" && $2 !~ /^\\/boot/ && NF >= 4 {
-        opts = $4
-        gsub(/(^|,)ro(,|$)/, ",", opts)
-        gsub(/(^|,)rw(,|$)/, ",", opts)
-        sub(/^,/, "", opts)
-        sub(/,$/, "", opts)
-        $4 = (opts == "" ? "ro" : "ro," opts)
+        print "# " $0 "  # beryllium-readonly: RAM overlay"
+        next
     }
     { print }
 ' /sysroot/etc/fstab > /sysroot/etc/fstab.beryllium-readonly \
     && mv /sysroot/etc/fstab.beryllium-readonly /sysroot/etc/fstab \\
-    || warn "beryllium-readonly: cannot adjust the fstab; subvolume mounts will persist"
+    || {
+    warn "beryllium-readonly: cannot adjust the fstab; falling back to read-write"
+    umount /sysroot
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+}
+
+(
+    while IFS="$(printf '\t')" read -r dev mp fstype opts; do
+        [ -n "$dev" ] || continue
+        overlay_subvolume "$dev" "$mp" "$fstype" "$opts" ||
+            warn "beryllium-readonly: $mp will use the RAM-backed root without its persistent subvolume contents"
+    done < $BASE/subvolumes
+)
 
 readonly_boot
 return 0
@@ -1437,7 +1542,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "4"
+    module_version = "7"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True, exist_ok=True)
@@ -1556,9 +1661,9 @@ return 0
         "The real root is shadowed by an OverlayFS with a tmpfs upper (half of RAM).",
         "All writes to the root are discarded at the next reboot:",
         "installs, updates and host-key changes appear to work but vanish.",
-        "Btrfs subvolume mounts (/home, /var/log, ...) are re-mounted",
-        "read-only via an ephemeral fstab, so nothing persists through",
-        "them either; only the boot filesystem stays read-write.",
+        "Btrfs subvolumes (/home, /var/log, ...) get RAM overlays too:",
+        "their files remain visible and writes succeed, but all changes",
+        "vanish at reboot; only the boot filesystem stays read-write.",
         "",
         "The toggle is a marker file at " + str(marker_path) + ":",
         "present = read-write boot, absent = read-only boot.",
