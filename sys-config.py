@@ -1249,6 +1249,7 @@ check() {
 
 install() {
     dracut_install mount umount mkdir mountpoint
+    dracut_install awk tr
     instmods overlay
     instmods vfat nls_cp437 nls_iso8859-1
     inst_hook pre-pivot 01 "$moddir/beryllium-readonly-mount.sh"
@@ -1305,8 +1306,20 @@ check_for_marker() {
     dev=$(printf %s "$spec" | awk '{ print $1 }')
     fstype=$(printf %s "$spec" | awk '{ print $3 }')
     case "$dev" in
-        UUID=*) dev=/dev/disk/by-uuid/$(printf %s "${dev#UUID=}" | tr 'A-F' 'a-f') ;;
-        PARTUUID=*) dev=/dev/disk/by-partuuid/$(printf %s "${dev#PARTUUID=}" | tr 'A-F' 'a-f') ;;
+        UUID=*|PARTUUID=*)
+            # /dev/disk/by-uuid/by-partuuid entries are lowercase for
+            # most filesystems, but FAT-family UUIDs are uppercase
+            # (e.g. /dev/disk/by-uuid/B022-79C2).
+            id=${dev#*=}
+            case "$fstype" in
+                vfat|msdos|exfat) id=$(printf %s "$id" | tr 'a-f' 'A-F') ;;
+                *) id=$(printf %s "$id" | tr 'A-F' 'a-f') ;;
+            esac
+            case "$dev" in
+                UUID=*) dev=/dev/disk/by-uuid/$id ;;
+                PARTUUID=*) dev=/dev/disk/by-partuuid/$id ;;
+            esac
+            ;;
         LABEL=*) dev=/dev/disk/by-label/$(printf %s "${dev#LABEL=}") ;;
         PARTLABEL=*) dev=/dev/disk/by-partlabel/$(printf %s "${dev#PARTLABEL=}") ;;
     esac
@@ -1402,7 +1415,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "1"
+    module_version = "2"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True)
