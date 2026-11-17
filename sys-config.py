@@ -1373,12 +1373,18 @@ mount -t overlay overlay \\
 # so no writes persist through them. /boot (and the ESP) keep their
 # options: the marker must stay writable.
 awk '
-    /^[ \\t]*#/ { print; next }
+    /^[ \t]*#/ { print; next }
     $2 == "/" { print "# " $0 "  # beryllium-readonly: overlay root"; next }
-    $3 == "btrfs" && $2 !~ /^\\/boot/ && NF >= 4 \\
-        && $4 !~ /(^|,)ro(,|$)/ { $4 = "ro," $4 }
+    $3 == "btrfs" && $2 !~ /^\\/boot/ && NF >= 4 {
+        opts = $4
+        gsub(/(^|,)ro(,|$)/, ",", opts)
+        gsub(/(^|,)rw(,|$)/, ",", opts)
+        sub(/^,/, "", opts)
+        sub(/,$/, "", opts)
+        $4 = (opts == "" ? "ro" : "ro," opts)
+    }
     { print }
-' /sysroot/etc/fstab > /sysroot/etc/fstab.beryllium-readonly \\
+' /sysroot/etc/fstab > /sysroot/etc/fstab.beryllium-readonly \
     && mv /sysroot/etc/fstab.beryllium-readonly /sysroot/etc/fstab \\
     || warn "beryllium-readonly: cannot adjust the fstab; subvolume mounts will persist"
 
@@ -1431,7 +1437,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "3"
+    module_version = "4"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True, exist_ok=True)
