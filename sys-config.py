@@ -1434,12 +1434,29 @@ mount -o remount,bind,ro $LOWER || {
     return 0
 }
 
+# Only subvolumes on the root filesystem's partition are ephemeral.
+# Other btrfs filesystems keep their normal persistent fstab mounts.
+root_uuid=$(awk '
+    /^[ \\t]*#/ { next }
+    $2 == "/" && $1 ~ /^UUID=/ {
+        print tolower(substr($1, 6))
+        exit
+    }
+' /sysroot/etc/fstab)
+if [ -z "$root_uuid" ]; then
+    warn "beryllium-readonly: cannot find the root filesystem UUID"
+    umount $LOWER
+    umount $BASE
+    boot_rw
+    return 0
+fi
+
 # Save the original subvolume specifications before replacing the
 # fstab. /boot and /boot/efi are deliberately excluded: they hold the
 # persistent toggle marker and stay read-write.
-awk '
+awk -v root_uuid="$root_uuid" '
     /^[ \\t]*#/ { next }
-    $3 == "btrfs" && $2 != "/" && $2 !~ /^\\/boot/ && NF >= 4 {
+    $3 == "btrfs" && tolower($1) == "uuid=" root_uuid && $2 != "/" && $2 !~ /^\\/boot/ && NF >= 4 {
         print $1 "\t" $2 "\t" $3 "\t" $4
     }
 ' /sysroot/etc/fstab > $BASE/subvolumes || {
@@ -1461,15 +1478,15 @@ mount -t overlay overlay \\
 }
 
 # Present an ephemeral fstab to the real root, copied up into the
-# overlay upper so it vanishes at reboot. The root and btrfs entries
-# are commented out because this hook mounts their overlays itself;
+# overlay upper so it vanishes at reboot. The root and matching btrfs
+# entries are commented out because this hook mounts their overlays itself;
 # otherwise systemd would mount the persistent filesystems over them.
 # /boot (and the ESP) keep their entries and stay read-write.
-awk '
+awk -v root_uuid="$root_uuid" '
     BEGIN { print "# THIS IS A FAKE FSTAB, NOT A REAL FILE" }
     /^[ \t]*#/ { print; next }
     $2 == "/" { print "# " $0 "  # beryllium-readonly: RAM overlay"; next }
-    $3 == "btrfs" && $2 !~ /^\\/boot/ && NF >= 4 {
+    $3 == "btrfs" && tolower($1) == "uuid=" root_uuid && $2 !~ /^\\/boot/ && NF >= 4 {
         print "# " $0 "  # beryllium-readonly: RAM overlay"
         next
     }
@@ -1542,7 +1559,7 @@ return 0
     marker_exists = marker_path.exists()
     marker_arg = shlex.quote(str(marker_path))
 
-    module_version = "7"
+    module_version = "8"
 
     def _install_module_files() -> None:
         module_dir.mkdir(parents=True, exist_ok=True)
@@ -1661,9 +1678,9 @@ return 0
         "The real root is shadowed by an OverlayFS with a tmpfs upper (half of RAM).",
         "All writes to the root are discarded at the next reboot:",
         "installs, updates and host-key changes appear to work but vanish.",
-        "Btrfs subvolumes (/home, /var/log, ...) get RAM overlays too:",
+        "Btrfs subvolumes on the root filesystem get RAM overlays too:",
         "their files remain visible and writes succeed, but all changes",
-        "vanish at reboot; only the boot filesystem stays read-write.",
+        "vanish at reboot; boot and other disks stay read-write.",
         "",
         "The toggle is a marker file at " + str(marker_path) + ":",
         "present = read-write boot, absent = read-only boot.",
